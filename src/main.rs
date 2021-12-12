@@ -9,8 +9,9 @@ use std::{
     path::Path,
 };
 use svd_rs::{
-    Access, AddressBlock, Cpu, Device, Peripheral, PeripheralInfo, Protection, Register,
-    RegisterCluster, RegisterInfo, RegisterProperties, ValidateLevel,
+    Access, AddressBlock, BitRange, Cpu, Device, EnumeratedValue, EnumeratedValues, Field,
+    FieldInfo, Peripheral, PeripheralInfo, Protection, Register, RegisterCluster, RegisterInfo,
+    RegisterProperties, ValidateLevel,
 };
 
 #[derive(Debug)]
@@ -98,9 +99,7 @@ fn main() {
 
     // TODO:
     // interrupts
-    // peripherals
-    //    registers
-    //    pin mappings for hsiom
+    // pin mappings for hsiom
     let mut peripherals = Vec::<Peripheral>::new();
     // let temp_interrupt = Interrupt::builder()
     //     .name("test".to_string())
@@ -163,18 +162,61 @@ fn main() {
 
         // TODO - handle register clusters, which are direct block children of the peripheral.
         // We can then swap the following `descendants` call with `children`
+        // TODO - handle reset values
         let registers = p.descendants().filter(|n| n.has_tag_name("register"));
         let registers = registers.map(|r| {
             let name = r.attribute("name").unwrap();
             let address_str = r.attribute("address").unwrap().trim_start_matches("0x");
             let address = u64::from_str_radix(address_str, 16).unwrap();
+            let fields = r.children().filter(|n| n.has_tag_name("field")).map(|f| {
+                // println!("Parsing field {:?}", f);
+                let name = f.attribute("name").unwrap();
+                let bit_from: u32 = f.attribute("from").unwrap().parse().unwrap();
+                let bit_to: u32 = f.attribute("to").unwrap().parse().unwrap();
+                let bit_range = BitRange {
+                    offset: bit_to,
+                    width: (bit_from - bit_to) + 1,
+                    range_type: svd_rs::BitRangeType::BitRange,
+                };
+                // let field_description = if let Some(s) = f.attribute("description") {
+                //     Some(s.to_string())
+                // } else {
+                //     None
+                // };
+                let field_options = f
+                    .children()
+                    .filter(|v| v.has_tag_name("value"))
+                    .map(|v| {
+                        let val_string = v.attribute("value").unwrap();
+                        EnumeratedValue::builder()
+                            .name(v.attribute("name").unwrap().to_string())
+                            .value(Some(u64::from_str_radix(val_string, 2).unwrap()))
+                            .build(ValidateLevel::Strict)
+                            .unwrap()
+                    })
+                    .collect::<Vec<EnumeratedValue>>();
+                let mut field_builder = FieldInfo::builder()
+                    .name(name.to_string())
+                    .bit_range(bit_range);
+                if !field_options.is_empty() {
+                    let field_options = EnumeratedValues::builder()
+                        .values(field_options)
+                        .build(ValidateLevel::Strict)
+                        .unwrap();
+                    field_builder = field_builder.enumerated_values([field_options].to_vec());
+                }
+
+                let field = field_builder.build(ValidateLevel::Strict).unwrap();
+                Field::Single(field)
+            });
+
             let reg = RegisterInfo::builder()
                 .name(name.to_string())
                 .address_offset((address - base_addr).try_into().unwrap())
+                .fields(Some(fields.collect()))
                 .build(ValidateLevel::Strict)
                 .unwrap();
-            let reg = Register::Single(reg);
-            RegisterCluster::Register(reg)
+            RegisterCluster::Register(Register::Single(reg))
         });
         new_peripheral = new_peripheral.registers(Some(registers.collect()));
         let new_peripheral = new_peripheral.build(ValidateLevel::Strict).unwrap();
