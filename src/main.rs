@@ -9,8 +9,8 @@ use std::{
     path::Path,
 };
 use svd_rs::{
-    Access, AddressBlock, Cpu, Device, Peripheral, PeripheralInfo, Protection,
-    RegisterProperties, ValidateLevel,
+    Access, AddressBlock, Cpu, Device, Peripheral, PeripheralInfo, Protection, RegisterProperties,
+    ValidateLevel,
 };
 
 #[derive(Debug)]
@@ -121,9 +121,26 @@ fn main() {
         .collect::<Vec<roxmltree::Node>>();
     println!("Found {} peripherals", peripheral_blocks.len());
 
-    for p in peripheral_blocks {
+    for p in &peripheral_blocks {
         println!("Creating peripheral for {:?}", p);
         let mut new_peripheral = PeripheralInfo::builder();
+        if p.has_attribute("basename") {
+            let basename = p.attribute("basename").unwrap();
+            let derived_from_peripheral = peripheral_blocks
+                .iter()
+                .find(|n| {
+                    n.has_attribute("basename") && n.attribute("basename").unwrap() == basename
+                })
+                .unwrap();
+            if p != derived_from_peripheral {
+                new_peripheral = new_peripheral.derived_from(Some(
+                    derived_from_peripheral
+                        .attribute("name")
+                        .unwrap()
+                        .to_string(),
+                ));
+            }
+        }
         if p.has_attribute("name") {
             new_peripheral = new_peripheral.name(p.attribute("name").unwrap().to_string());
         }
