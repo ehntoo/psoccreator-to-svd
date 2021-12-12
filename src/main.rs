@@ -64,29 +64,29 @@ fn main() {
 
     let datasheet_path = dir_path.join("datasheet.cydata");
     let register_map_path = dir_path.join("map_inst.cydata");
-    let hsiom_conn_path = dir_path.join("hsiomconn.cydata");
-    let clk_conn_path = dir_path.join("clkconn.cydata");
-    let irq_conn_path = dir_path.join("irqconn.cydata");
+    // let hsiom_conn_path = dir_path.join("hsiomconn.cydata");
+    // let clk_conn_path = dir_path.join("clkconn.cydata");
+    // let irq_conn_path = dir_path.join("irqconn.cydata");
 
     println!("Loading source .cydata files");
     let datasheet_xml = load_datafile(datasheet_path.as_path()).expect("Parsing datasheet file");
     let register_map_xml =
         load_datafile(register_map_path.as_path()).expect("Parsing register map file");
-    let hsiom_conn_xml =
-        load_datafile(hsiom_conn_path.as_path()).expect("Parsing HSIOM connection file");
-    let clk_conn_xml = load_datafile(clk_conn_path.as_path()).expect("Parsing CLK connection file");
-    let irq_conn_xml = load_datafile(irq_conn_path.as_path()).expect("Parsing IRQ connection file");
+    // let hsiom_conn_xml =
+    //     load_datafile(hsiom_conn_path.as_path()).expect("Parsing HSIOM connection file");
+    // let clk_conn_xml = load_datafile(clk_conn_path.as_path()).expect("Parsing CLK connection file");
+    // let irq_conn_xml = load_datafile(irq_conn_path.as_path()).expect("Parsing IRQ connection file");
 
     println!("Parsing .cydata XML");
     let datasheet_doc = roxmltree::Document::parse(&datasheet_xml).expect("Parsing datasheet XML");
     let register_map_doc =
         roxmltree::Document::parse(&register_map_xml).expect("Parsing register map XML");
-    let _hsiom_conn_doc =
-        roxmltree::Document::parse(&hsiom_conn_xml).expect("Parsing HSIOM connection XML");
-    let _clk_conn_doc =
-        roxmltree::Document::parse(&clk_conn_xml).expect("Parsing CLK connection XML");
-    let _irq_conn_doc =
-        roxmltree::Document::parse(&irq_conn_xml).expect("Parsing IRQ connection XML");
+    // let _hsiom_conn_doc =
+    //     roxmltree::Document::parse(&hsiom_conn_xml).expect("Parsing HSIOM connection XML");
+    // let _clk_conn_doc =
+    //     roxmltree::Document::parse(&clk_conn_xml).expect("Parsing CLK connection XML");
+    // let _irq_conn_doc =
+    //     roxmltree::Document::parse(&irq_conn_xml).expect("Parsing IRQ connection XML");
 
     let description = datasheet_doc
         .root_element()
