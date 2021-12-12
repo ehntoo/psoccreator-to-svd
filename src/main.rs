@@ -2,9 +2,14 @@
 extern crate clap;
 use clap::App;
 use flate2::read::GzDecoder;
-use std::{fs::File, io::{Read, Write}, path::Path};
+use std::{
+    fs::File,
+    io::{Read, Write},
+    path::Path,
+};
 use svd_rs::{
-    Access, Peripheral, Protection, RegisterProperties, ValidateLevel, Cpu, Device, PeripheralInfo, Interrupt,
+    Access, Cpu, Device, Interrupt, Peripheral, PeripheralInfo, Protection, RegisterProperties,
+    ValidateLevel,
 };
 
 #[derive(Debug)]
@@ -62,20 +67,16 @@ fn main() {
     let irq_conn_path = dir_path.join("irqconn.cydata");
 
     println!("Loading source .cydata files");
-    let datasheet_xml =
-        load_datafile(datasheet_path.as_path()).expect("Parsing datasheet file");
+    let datasheet_xml = load_datafile(datasheet_path.as_path()).expect("Parsing datasheet file");
     let register_map_xml =
         load_datafile(register_map_path.as_path()).expect("Parsing register map file");
     let hsiom_conn_xml =
         load_datafile(hsiom_conn_path.as_path()).expect("Parsing HSIOM connection file");
-    let clk_conn_xml =
-        load_datafile(clk_conn_path.as_path()).expect("Parsing CLK connection file");
-    let irq_conn_xml =
-        load_datafile(irq_conn_path.as_path()).expect("Parsing IRQ connection file");
+    let clk_conn_xml = load_datafile(clk_conn_path.as_path()).expect("Parsing CLK connection file");
+    let irq_conn_xml = load_datafile(irq_conn_path.as_path()).expect("Parsing IRQ connection file");
 
     println!("Parsing .cydata XML");
-    let datasheet_doc =
-        roxmltree::Document::parse(&datasheet_xml).expect("Parsing datasheet XML");
+    let datasheet_doc = roxmltree::Document::parse(&datasheet_xml).expect("Parsing datasheet XML");
     let _register_map_doc =
         roxmltree::Document::parse(&register_map_xml).expect("Parsing register map XML");
     let _hsiom_conn_doc =
@@ -85,15 +86,15 @@ fn main() {
     let _irq_conn_doc =
         roxmltree::Document::parse(&irq_conn_xml).expect("Parsing IRQ connection XML");
 
-        let description = datasheet_doc
+    let description = datasheet_doc
         .root_element()
         .children()
         .find(|n| n.has_tag_name("Overview"))
         .unwrap()
         .attribute("value")
         .unwrap();
-        println!("Chip description: {}", description);
-        
+    println!("Chip description: {}", description);
+
     // TODO:
     // interrupts
     // peripherals
@@ -120,7 +121,6 @@ fn main() {
     default_register_properties.reset_mask = Some(0xFFFF_FFFF);
     default_register_properties.size = Some(32);
 
-
     let cpu = Cpu::builder()
         .name("CM0".to_string()) // TODO - placeholder. Can be extracted from devicetree in device data root?
         .revision("r1p0".to_string())
@@ -144,9 +144,8 @@ fn main() {
         .peripherals(peripherals)
         .build(ValidateLevel::Strict)
         .expect("Constructing SVD Device");
-    
-    let svd_xml = svd_encoder::encode(&svd_device)
-        .expect("Encoding SVD");
+
+    let svd_xml = svd_encoder::encode(&svd_device).expect("Encoding SVD");
 
     let svd_filename = matches.value_of("output").unwrap();
     let mut svd_file = match File::create(&svd_filename) {
