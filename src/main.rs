@@ -10,7 +10,7 @@ use std::{
 };
 use svd_rs::{
     Access, AddressBlock, BitRange, Cpu, Device, EnumeratedValue, EnumeratedValues, Field,
-    FieldInfo, ModifiedWriteValues, Peripheral, PeripheralInfo, Protection, Register,
+    FieldInfo, ModifiedWriteValues, Peripheral, PeripheralInfo, Protection, ReadAction, Register,
     RegisterCluster, RegisterInfo, RegisterProperties, ValidateLevel,
 };
 
@@ -187,11 +187,20 @@ fn main() {
                     Some("W") => Some(Access::WriteOnly),
                     Some("RWOCLR") => Some(Access::ReadWrite),
                     Some("RWOSET") => Some(Access::ReadWrite),
+                    Some("RCLR") => Some(Access::ReadOnly),
+                    Some("RWCLR") => Some(Access::ReadWrite),
+                    Some("RWZCLR") => Some(Access::ReadWrite),
                     _ => None,
                 };
                 let modified_write = match access_string {
                     Some("RWOCLR") => Some(ModifiedWriteValues::OneToClear),
                     Some("RWOSET") => Some(ModifiedWriteValues::OneToSet),
+                    Some("RWCLR") => Some(ModifiedWriteValues::Clear),
+                    Some("RWZCLR") => Some(ModifiedWriteValues::ZeroToClear),
+                    _ => None,
+                };
+                let read_action = match access_string {
+                    Some("RCLR") => Some(ReadAction::Clear),
                     _ => None,
                 };
                 // let field_description = if let Some(s) = f.attribute("description") {
@@ -214,6 +223,7 @@ fn main() {
                 let mut field_builder = FieldInfo::builder()
                     .name(name.to_string())
                     .access(access)
+                    .read_action(read_action)
                     .modified_write_values(modified_write)
                     .bit_range(bit_range);
                 if !field_options.is_empty() {
