@@ -1,0 +1,13 @@
+[package]
+name = "psoccreator-to-svd"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+svd-encoder = "0.12.0"
+roxmltree = "0.14.1"
+clap = { version = "2.34.0", features = ["yaml"] }
+flate2 = "1.0.22"
+svd-rs = "0.12.1"

@@ -1,0 +1,19 @@
+name: psoccreator-to-svd
+version: "0.1"
+author: Mitchell Johnson <ehntoo@ehntoo.org>
+about: Converts PSoC Creator data into CMSIS-SVD files
+args:
+    - directory:
+        short: d
+        long: directory
+        value_name: SRC_DIR
+        help: Directory to source PSoC Creator data files from
+        takes_value: true
+        required: true
+    - output:
+        short: o
+        long: output
+        value_name: OUT_SVD
+        help: Output SVD file
+        takes_value: true
+        required: true
