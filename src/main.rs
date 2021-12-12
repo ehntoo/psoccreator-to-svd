@@ -2,14 +2,15 @@
 extern crate clap;
 use clap::App;
 use flate2::read::GzDecoder;
+use regex::Regex;
 use std::{
     fs::File,
     io::{Read, Write},
     path::Path,
 };
 use svd_rs::{
-    Access, Cpu, Device, Interrupt, Peripheral, PeripheralInfo, Protection, RegisterProperties,
-    ValidateLevel,
+    Access, AddressBlock, Cpu, Device, Peripheral, PeripheralInfo, Protection,
+    RegisterProperties, ValidateLevel,
 };
 
 #[derive(Debug)]
@@ -77,7 +78,7 @@ fn main() {
 
     println!("Parsing .cydata XML");
     let datasheet_doc = roxmltree::Document::parse(&datasheet_xml).expect("Parsing datasheet XML");
-    let _register_map_doc =
+    let register_map_doc =
         roxmltree::Document::parse(&register_map_xml).expect("Parsing register map XML");
     let _hsiom_conn_doc =
         roxmltree::Document::parse(&hsiom_conn_xml).expect("Parsing HSIOM connection XML");
@@ -101,18 +102,49 @@ fn main() {
     //    registers
     //    pin mappings for hsiom
     let mut peripherals = Vec::<Peripheral>::new();
-    let temp_interrupt = Interrupt::builder()
-        .name("test".to_string())
-        .value(0)
-        .build(ValidateLevel::Strict)
-        .expect("Creating interrupt");
-    let temp_peripheral = PeripheralInfo::builder()
-        .name("test".to_string())
-        .base_address(0x10000000)
-        .interrupt(Some([temp_interrupt].to_vec()))
-        .build(ValidateLevel::Strict)
-        .expect("Creating peripheral");
-    peripherals.push(Peripheral::Single(temp_peripheral));
+    // let temp_interrupt = Interrupt::builder()
+    //     .name("test".to_string())
+    //     .value(0)
+    //     .build(ValidateLevel::Strict)
+    //     .expect("Creating interrupt");
+
+    let mmio_block_name_regex = Regex::new(r"MMIO").unwrap();
+    let doc_mmio_blocks = register_map_doc.root_element().children().filter(|n| {
+        n.has_tag_name("block")
+            && n.has_attribute("name")
+            && mmio_block_name_regex.is_match(n.attribute("name").unwrap())
+    });
+
+    let peripheral_blocks = doc_mmio_blocks
+        .flat_map(|n| n.children())
+        .filter(|n| n.is_element())
+        .collect::<Vec<roxmltree::Node>>();
+    println!("Found {} peripherals", peripheral_blocks.len());
+
+    for p in peripheral_blocks {
+        println!("Creating peripheral for {:?}", p);
+        let mut new_peripheral = PeripheralInfo::builder();
+        if p.has_attribute("name") {
+            new_peripheral = new_peripheral.name(p.attribute("name").unwrap().to_string());
+        }
+        if p.has_attribute("BASE") {
+            let base_addr_str = p.attribute("BASE").unwrap().trim_start_matches("0x");
+            new_peripheral =
+                new_peripheral.base_address(u64::from_str_radix(base_addr_str, 16).unwrap());
+        }
+        if p.has_attribute("SIZE") {
+            let peripheral_size_str = p.attribute("SIZE").unwrap().trim_start_matches("0x");
+            let address_block = AddressBlock::builder()
+                .size(u32::from_str_radix(peripheral_size_str, 16).unwrap())
+                .offset(0)
+                .usage(svd_rs::AddressBlockUsage::Registers)
+                .build(ValidateLevel::Strict)
+                .unwrap();
+            new_peripheral = new_peripheral.address_block(Some([address_block].to_vec()));
+        }
+        let new_peripheral = new_peripheral.build(ValidateLevel::Strict).unwrap();
+        peripherals.push(Peripheral::Single(new_peripheral));
+    }
 
     let mut default_register_properties = RegisterProperties::new();
     default_register_properties.access = Some(Access::ReadWrite);
@@ -127,8 +159,8 @@ fn main() {
         .endian(svd_rs::Endian::Little)
         .mpu_present(false)
         .fpu_present(false)
-        .nvic_priority_bits(2)
-        .has_vendor_systick(false)
+        .nvic_priority_bits(2) // TODO - extract from register map, width of IPR0/0xe000e400
+        .has_vendor_systick(false) // the PSoC parts all seem to have the ARM systick
         .build(ValidateLevel::Strict)
         .expect("Constructing CPU");
 
@@ -149,12 +181,12 @@ fn main() {
 
     let svd_filename = matches.value_of("output").unwrap();
     let mut svd_file = match File::create(&svd_filename) {
-        Err(why) => panic!("couldn't create {}: {}", svd_filename, why),
+        Err(why) => panic!("Couldn't create {}: {}", svd_filename, why),
         Ok(file) => file,
     };
 
     match svd_file.write_all(svd_xml.as_bytes()) {
-        Err(why) => panic!("couldn't write to {}: {}", svd_filename, why),
-        Ok(_) => println!("successfully wrote to {}", svd_filename),
+        Err(why) => panic!("Couldn't write to {}: {}", svd_filename, why),
+        Ok(_) => println!("Successfully wrote to {}", svd_filename),
     }
 }
