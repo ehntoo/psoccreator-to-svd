@@ -10,8 +10,8 @@ use std::{
 };
 use svd_rs::{
     Access, AddressBlock, BitRange, Cpu, Device, EnumeratedValue, EnumeratedValues, Field,
-    FieldInfo, Peripheral, PeripheralInfo, Protection, Register, RegisterCluster, RegisterInfo,
-    RegisterProperties, ValidateLevel,
+    FieldInfo, ModifiedWriteValues, Peripheral, PeripheralInfo, Protection, Register,
+    RegisterCluster, RegisterInfo, RegisterProperties, ValidateLevel,
 };
 
 #[derive(Debug)]
@@ -162,7 +162,9 @@ fn main() {
 
         // TODO - handle register clusters, which are direct block children of the peripheral.
         // We can then swap the following `descendants` call with `children`
-        // TODO - handle reset values
+        // TODO - handle reset values. the cydata format puts the reset value on each register
+        // field, so we'll have to aggregate the reset value of each field along with its mask
+        // value in order to produce the right output
         let registers = p.descendants().filter(|n| n.has_tag_name("register"));
         let registers = registers.map(|r| {
             let name = r.attribute("name").unwrap();
@@ -177,6 +179,20 @@ fn main() {
                     offset: bit_to,
                     width: (bit_from - bit_to) + 1,
                     range_type: svd_rs::BitRangeType::BitRange,
+                };
+                let access_string = f.attribute("access");
+                let access = match access_string {
+                    Some("RW") => Some(Access::ReadWrite),
+                    Some("R") => Some(Access::ReadOnly),
+                    Some("W") => Some(Access::WriteOnly),
+                    Some("RWOCLR") => Some(Access::ReadWrite),
+                    Some("RWOSET") => Some(Access::ReadWrite),
+                    _ => None,
+                };
+                let modified_write = match access_string {
+                    Some("RWOCLR") => Some(ModifiedWriteValues::OneToClear),
+                    Some("RWOSET") => Some(ModifiedWriteValues::OneToSet),
+                    _ => None,
                 };
                 // let field_description = if let Some(s) = f.attribute("description") {
                 //     Some(s.to_string())
@@ -197,6 +213,8 @@ fn main() {
                     .collect::<Vec<EnumeratedValue>>();
                 let mut field_builder = FieldInfo::builder()
                     .name(name.to_string())
+                    .access(access)
+                    .modified_write_values(modified_write)
                     .bit_range(bit_range);
                 if !field_options.is_empty() {
                     let field_options = EnumeratedValues::builder()
