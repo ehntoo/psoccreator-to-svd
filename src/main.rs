@@ -9,8 +9,8 @@ use std::{
     path::Path,
 };
 use svd_rs::{
-    Access, AddressBlock, Cpu, Device, Peripheral, PeripheralInfo, Protection, RegisterProperties,
-    ValidateLevel,
+    Access, AddressBlock, Cpu, Device, Peripheral, PeripheralInfo, Protection, Register,
+    RegisterCluster, RegisterInfo, RegisterProperties, ValidateLevel,
 };
 
 #[derive(Debug)]
@@ -144,11 +144,12 @@ fn main() {
         if p.has_attribute("name") {
             new_peripheral = new_peripheral.name(p.attribute("name").unwrap().to_string());
         }
-        if p.has_attribute("BASE") {
-            let base_addr_str = p.attribute("BASE").unwrap().trim_start_matches("0x");
-            new_peripheral =
-                new_peripheral.base_address(u64::from_str_radix(base_addr_str, 16).unwrap());
-        }
+
+        // Let's assume that a base address has been provided, since I don't know what we'd do without one
+        let base_addr_str = p.attribute("BASE").unwrap().trim_start_matches("0x");
+        let base_addr = u64::from_str_radix(base_addr_str, 16).unwrap();
+        new_peripheral = new_peripheral.base_address(base_addr);
+
         if p.has_attribute("SIZE") {
             let peripheral_size_str = p.attribute("SIZE").unwrap().trim_start_matches("0x");
             let address_block = AddressBlock::builder()
@@ -159,6 +160,23 @@ fn main() {
                 .unwrap();
             new_peripheral = new_peripheral.address_block(Some([address_block].to_vec()));
         }
+
+        // TODO - handle register clusters, which are direct block children of the peripheral.
+        // We can then swap the following `descendants` call with `children`
+        let registers = p.descendants().filter(|n| n.has_tag_name("register"));
+        let registers = registers.map(|r| {
+            let name = r.attribute("name").unwrap();
+            let address_str = r.attribute("address").unwrap().trim_start_matches("0x");
+            let address = u64::from_str_radix(address_str, 16).unwrap();
+            let reg = RegisterInfo::builder()
+                .name(name.to_string())
+                .address_offset((address - base_addr).try_into().unwrap())
+                .build(ValidateLevel::Strict)
+                .unwrap();
+            let reg = Register::Single(reg);
+            RegisterCluster::Register(reg)
+        });
+        new_peripheral = new_peripheral.registers(Some(registers.collect()));
         let new_peripheral = new_peripheral.build(ValidateLevel::Strict).unwrap();
         peripherals.push(Peripheral::Single(new_peripheral));
     }
