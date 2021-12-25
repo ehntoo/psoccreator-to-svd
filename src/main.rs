@@ -92,9 +92,6 @@ fn generate_peripheral(p: &Node, peripheral_blocks: &[Node]) -> PeripheralInfo {
         new_peripheral = new_peripheral.address_block(Some([address_block].to_vec()));
     }
 
-    // TODO - handle reset values. the cydata format puts the reset value on each register
-    // field, so we'll have to aggregate the reset value of each field along with its mask
-    // value in order to produce the right output
     let children_nodes = p.children().filter(|n| n.is_element());
     let registers = children_nodes.map(|n| {
         if n.has_tag_name("block") {
@@ -159,6 +156,15 @@ fn build_register(r: Node, base_addr: u64) -> RegisterCluster {
             Some("RCLR") => Some(ReadAction::Clear),
             _ => None,
         };
+        let field_reset_val = f.attribute("resetVal");
+        let (field_reset_val, field_reset_mask) = match field_reset_val {
+            Some("U") => (None, None),
+            Some(val) => (
+                Some(u64::from_str_radix(val, 2).unwrap() << bit_range.offset),
+                Some(((1 << bit_range.width) - 1) << bit_range.offset as u64),
+            ),
+            _ => (None, None),
+        };
         // let field_description = if let Some(s) = f.attribute("description") {
         //     Some(s.to_string())
         // } else {
@@ -191,12 +197,25 @@ fn build_register(r: Node, base_addr: u64) -> RegisterCluster {
         }
 
         let field = field_builder.build(ValidateLevel::Strict).unwrap();
-        Field::Single(field)
+        (field_reset_val, field_reset_mask, Field::Single(field))
     });
+    let (reset_val, reset_mask, fields) = fields.fold(
+        (0, 0, Vec::<Field>::new()),
+        |mut a, (field_val, field_mask, f)| {
+            a.2.push(f);
+            (
+                a.0 | field_val.unwrap_or(0),
+                a.1 | field_mask.unwrap_or(0),
+                a.2,
+            )
+        },
+    );
     let reg = RegisterInfo::builder()
         .name(name.to_string())
         .address_offset((address - base_addr).try_into().unwrap())
-        .fields(Some(fields.collect()))
+        .reset_mask(Some(reset_mask))
+        .reset_value(Some(reset_val))
+        .fields(Some(fields))
         .build(ValidateLevel::Strict)
         .unwrap();
     RegisterCluster::Register(Register::Single(reg))
