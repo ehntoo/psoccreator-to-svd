@@ -3,15 +3,17 @@ extern crate clap;
 use clap::App;
 use flate2::read::GzDecoder;
 use regex::Regex;
+use roxmltree::Node;
 use std::{
     fs::File,
     io::{Read, Write},
     path::Path,
 };
 use svd_rs::{
-    Access, AddressBlock, BitRange, Cpu, Device, EnumeratedValue, EnumeratedValues, Field,
-    FieldInfo, ModifiedWriteValues, Peripheral, PeripheralInfo, Protection, ReadAction, Register,
-    RegisterCluster, RegisterInfo, RegisterProperties, ValidateLevel,
+    Access, AddressBlock, BitRange, Cluster, ClusterInfo, Cpu, Device, EnumeratedValue,
+    EnumeratedValues, Field, FieldInfo, ModifiedWriteValues, Peripheral, PeripheralInfo,
+    Protection, ReadAction, Register, RegisterCluster, RegisterInfo, RegisterProperties,
+    ValidateLevel,
 };
 
 #[derive(Debug)]
@@ -51,6 +53,153 @@ fn load_datafile(f: &Path) -> Result<String, PsocFileError> {
     } else {
         Err(PsocFileError::Open)
     }
+}
+
+fn generate_peripheral(p: &Node, peripheral_blocks: &[Node]) -> PeripheralInfo {
+    let mut new_peripheral = PeripheralInfo::builder();
+    if p.has_attribute("basename") {
+        let basename = p.attribute("basename").unwrap();
+        let derived_from_peripheral = peripheral_blocks
+            .iter()
+            .find(|n| n.has_attribute("basename") && n.attribute("basename").unwrap() == basename)
+            .unwrap();
+        if p != derived_from_peripheral {
+            new_peripheral = new_peripheral.derived_from(Some(
+                derived_from_peripheral
+                    .attribute("name")
+                    .unwrap()
+                    .to_string(),
+            ));
+        }
+    }
+    if p.has_attribute("name") {
+        new_peripheral = new_peripheral.name(p.attribute("name").unwrap().to_string());
+    }
+
+    // Let's assume that a base address has been provided, since I don't know what we'd do without one
+    let base_addr_str = p.attribute("BASE").unwrap().trim_start_matches("0x");
+    let base_addr = u64::from_str_radix(base_addr_str, 16).unwrap();
+    new_peripheral = new_peripheral.base_address(base_addr);
+
+    if p.has_attribute("SIZE") {
+        let peripheral_size_str = p.attribute("SIZE").unwrap().trim_start_matches("0x");
+        let address_block = AddressBlock::builder()
+            .size(u32::from_str_radix(peripheral_size_str, 16).unwrap())
+            .offset(0)
+            .usage(svd_rs::AddressBlockUsage::Registers)
+            .build(ValidateLevel::Strict)
+            .unwrap();
+        new_peripheral = new_peripheral.address_block(Some([address_block].to_vec()));
+    }
+
+    // TODO - handle reset values. the cydata format puts the reset value on each register
+    // field, so we'll have to aggregate the reset value of each field along with its mask
+    // value in order to produce the right output
+    let children_nodes = p.children().filter(|n| n.is_element());
+    let registers = children_nodes.map(|n| {
+        if n.has_tag_name("block") {
+            let mut cluster = ClusterInfo::builder();
+            if n.has_attribute("name") {
+                cluster = cluster.name(n.attribute("name").unwrap().to_string());
+            }
+            let mut cluster_base_addr = base_addr;
+            if n.has_attribute("BASE") {
+                let cluster_base_str = n.attribute("BASE").unwrap().trim_start_matches("0x");
+                cluster_base_addr = u64::from_str_radix(cluster_base_str, 16).unwrap();
+                cluster = cluster.address_offset((cluster_base_addr - base_addr) as u32);
+            }
+            let register_nodes = n.children().filter(|n| n.has_tag_name("register"));
+            let registers = register_nodes.map(|r| build_register(r, cluster_base_addr));
+            cluster = cluster.children(registers.collect());
+            RegisterCluster::Cluster(Cluster::Single(
+                cluster.build(ValidateLevel::Strict).unwrap(),
+            ))
+        } else {
+            build_register(n, base_addr)
+        }
+    });
+    new_peripheral = new_peripheral.registers(Some(registers.collect()));
+    new_peripheral.build(ValidateLevel::Strict).unwrap()
+}
+
+fn build_register(r: Node, base_addr: u64) -> RegisterCluster {
+    let name = r.attribute("name").unwrap();
+    let address_str = r.attribute("address").unwrap().trim_start_matches("0x");
+    let address = u64::from_str_radix(address_str, 16).unwrap();
+    let fields = r.children().filter(|n| n.has_tag_name("field")).map(|f| {
+        // println!("Parsing field {:?}", f);
+        let name = f.attribute("name").unwrap();
+        let bit_from: u32 = f.attribute("from").unwrap().parse().unwrap();
+        let bit_to: u32 = f.attribute("to").unwrap().parse().unwrap();
+        let bit_range = BitRange {
+            offset: bit_to,
+            width: (bit_from - bit_to) + 1,
+            range_type: svd_rs::BitRangeType::BitRange,
+        };
+        let access_string = f.attribute("access");
+        let access = match access_string {
+            Some("RW") => Some(Access::ReadWrite),
+            Some("R") => Some(Access::ReadOnly),
+            Some("W") => Some(Access::WriteOnly),
+            Some("RWOCLR") => Some(Access::ReadWrite),
+            Some("RWOSET") => Some(Access::ReadWrite),
+            Some("RCLR") => Some(Access::ReadOnly),
+            Some("RWCLR") => Some(Access::ReadWrite),
+            Some("RWZCLR") => Some(Access::ReadWrite),
+            _ => None,
+        };
+        let modified_write = match access_string {
+            Some("RWOCLR") => Some(ModifiedWriteValues::OneToClear),
+            Some("RWOSET") => Some(ModifiedWriteValues::OneToSet),
+            Some("RWCLR") => Some(ModifiedWriteValues::Clear),
+            Some("RWZCLR") => Some(ModifiedWriteValues::ZeroToClear),
+            _ => None,
+        };
+        let read_action = match access_string {
+            Some("RCLR") => Some(ReadAction::Clear),
+            _ => None,
+        };
+        // let field_description = if let Some(s) = f.attribute("description") {
+        //     Some(s.to_string())
+        // } else {
+        //     None
+        // };
+        let field_options = f
+            .children()
+            .filter(|v| v.has_tag_name("value"))
+            .map(|v| {
+                let val_string = v.attribute("value").unwrap();
+                EnumeratedValue::builder()
+                    .name(v.attribute("name").unwrap().to_string())
+                    .value(Some(u64::from_str_radix(val_string, 2).unwrap()))
+                    .build(ValidateLevel::Strict)
+                    .unwrap()
+            })
+            .collect::<Vec<EnumeratedValue>>();
+        let mut field_builder = FieldInfo::builder()
+            .name(name.to_string())
+            .access(access)
+            .read_action(read_action)
+            .modified_write_values(modified_write)
+            .bit_range(bit_range);
+        if !field_options.is_empty() {
+            let field_options = EnumeratedValues::builder()
+                .values(field_options)
+                .build(ValidateLevel::Strict)
+                .unwrap();
+            field_builder = field_builder.enumerated_values([field_options].to_vec());
+        }
+
+        let field = field_builder.build(ValidateLevel::Strict).unwrap();
+        Field::Single(field)
+    });
+    let reg = RegisterInfo::builder()
+        .name(name.to_string())
+        .address_offset((address - base_addr).try_into().unwrap())
+        .fields(Some(fields.collect()))
+        .build(ValidateLevel::Strict)
+        .unwrap();
+    RegisterCluster::Register(Register::Single(reg))
 }
 
 fn main() {
@@ -122,133 +271,15 @@ fn main() {
 
     for p in &peripheral_blocks {
         println!("Creating peripheral for {:?}", p);
-        let mut new_peripheral = PeripheralInfo::builder();
-        if p.has_attribute("basename") {
-            let basename = p.attribute("basename").unwrap();
-            let derived_from_peripheral = peripheral_blocks
-                .iter()
-                .find(|n| {
-                    n.has_attribute("basename") && n.attribute("basename").unwrap() == basename
-                })
-                .unwrap();
-            if p != derived_from_peripheral {
-                new_peripheral = new_peripheral.derived_from(Some(
-                    derived_from_peripheral
-                        .attribute("name")
-                        .unwrap()
-                        .to_string(),
-                ));
-            }
-        }
-        if p.has_attribute("name") {
-            new_peripheral = new_peripheral.name(p.attribute("name").unwrap().to_string());
-        }
 
-        // Let's assume that a base address has been provided, since I don't know what we'd do without one
-        let base_addr_str = p.attribute("BASE").unwrap().trim_start_matches("0x");
-        let base_addr = u64::from_str_radix(base_addr_str, 16).unwrap();
-        new_peripheral = new_peripheral.base_address(base_addr);
-
-        if p.has_attribute("SIZE") {
-            let peripheral_size_str = p.attribute("SIZE").unwrap().trim_start_matches("0x");
-            let address_block = AddressBlock::builder()
-                .size(u32::from_str_radix(peripheral_size_str, 16).unwrap())
-                .offset(0)
-                .usage(svd_rs::AddressBlockUsage::Registers)
-                .build(ValidateLevel::Strict)
-                .unwrap();
-            new_peripheral = new_peripheral.address_block(Some([address_block].to_vec()));
-        }
-
-        // TODO - handle register clusters, which are direct block children of the peripheral.
-        // We can then swap the following `descendants` call with `children`
-        // TODO - handle reset values. the cydata format puts the reset value on each register
-        // field, so we'll have to aggregate the reset value of each field along with its mask
-        // value in order to produce the right output
-        let registers = p.descendants().filter(|n| n.has_tag_name("register"));
-        let registers = registers.map(|r| {
-            let name = r.attribute("name").unwrap();
-            let address_str = r.attribute("address").unwrap().trim_start_matches("0x");
-            let address = u64::from_str_radix(address_str, 16).unwrap();
-            let fields = r.children().filter(|n| n.has_tag_name("field")).map(|f| {
-                // println!("Parsing field {:?}", f);
-                let name = f.attribute("name").unwrap();
-                let bit_from: u32 = f.attribute("from").unwrap().parse().unwrap();
-                let bit_to: u32 = f.attribute("to").unwrap().parse().unwrap();
-                let bit_range = BitRange {
-                    offset: bit_to,
-                    width: (bit_from - bit_to) + 1,
-                    range_type: svd_rs::BitRangeType::BitRange,
-                };
-                let access_string = f.attribute("access");
-                let access = match access_string {
-                    Some("RW") => Some(Access::ReadWrite),
-                    Some("R") => Some(Access::ReadOnly),
-                    Some("W") => Some(Access::WriteOnly),
-                    Some("RWOCLR") => Some(Access::ReadWrite),
-                    Some("RWOSET") => Some(Access::ReadWrite),
-                    Some("RCLR") => Some(Access::ReadOnly),
-                    Some("RWCLR") => Some(Access::ReadWrite),
-                    Some("RWZCLR") => Some(Access::ReadWrite),
-                    _ => None,
-                };
-                let modified_write = match access_string {
-                    Some("RWOCLR") => Some(ModifiedWriteValues::OneToClear),
-                    Some("RWOSET") => Some(ModifiedWriteValues::OneToSet),
-                    Some("RWCLR") => Some(ModifiedWriteValues::Clear),
-                    Some("RWZCLR") => Some(ModifiedWriteValues::ZeroToClear),
-                    _ => None,
-                };
-                let read_action = match access_string {
-                    Some("RCLR") => Some(ReadAction::Clear),
-                    _ => None,
-                };
-                // let field_description = if let Some(s) = f.attribute("description") {
-                //     Some(s.to_string())
-                // } else {
-                //     None
-                // };
-                let field_options = f
-                    .children()
-                    .filter(|v| v.has_tag_name("value"))
-                    .map(|v| {
-                        let val_string = v.attribute("value").unwrap();
-                        EnumeratedValue::builder()
-                            .name(v.attribute("name").unwrap().to_string())
-                            .value(Some(u64::from_str_radix(val_string, 2).unwrap()))
-                            .build(ValidateLevel::Strict)
-                            .unwrap()
-                    })
-                    .collect::<Vec<EnumeratedValue>>();
-                let mut field_builder = FieldInfo::builder()
-                    .name(name.to_string())
-                    .access(access)
-                    .read_action(read_action)
-                    .modified_write_values(modified_write)
-                    .bit_range(bit_range);
-                if !field_options.is_empty() {
-                    let field_options = EnumeratedValues::builder()
-                        .values(field_options)
-                        .build(ValidateLevel::Strict)
-                        .unwrap();
-                    field_builder = field_builder.enumerated_values([field_options].to_vec());
-                }
-
-                let field = field_builder.build(ValidateLevel::Strict).unwrap();
-                Field::Single(field)
-            });
-
-            let reg = RegisterInfo::builder()
-                .name(name.to_string())
-                .address_offset((address - base_addr).try_into().unwrap())
-                .fields(Some(fields.collect()))
-                .build(ValidateLevel::Strict)
-                .unwrap();
-            RegisterCluster::Register(Register::Single(reg))
-        });
-        new_peripheral = new_peripheral.registers(Some(registers.collect()));
-        let new_peripheral = new_peripheral.build(ValidateLevel::Strict).unwrap();
+        // is this a register cluster?
+        // if p.first_element_child().unwrap().has_tag_name("block") {
+        //     // peripherals.append(&mut generate_register_cluster(p));
+        //     peripherals.push(Peripheral::Single(generate_register_cluster(p)));
+        // } else {
+        let new_peripheral = generate_peripheral(p, &peripheral_blocks);
         peripherals.push(Peripheral::Single(new_peripheral));
+        // }
     }
 
     let mut default_register_properties = RegisterProperties::new();
