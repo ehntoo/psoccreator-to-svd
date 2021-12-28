@@ -232,7 +232,9 @@ fn main() {
 
     let datasheet_path = dir_path.join("datasheet.cydata");
     let register_map_path = dir_path.join("map_inst.cydata");
-    // let hsiom_conn_path = dir_path.join("hsiomconn.cydata");
+    let package_path = matches.value_of("package").map(|p| dir_path.join(p));
+
+    let hsiom_conn_path = dir_path.join("hsiomconn.cydata");
     // let clk_conn_path = dir_path.join("clkconn.cydata");
     // let irq_conn_path = dir_path.join("irqconn.cydata");
 
@@ -240,8 +242,10 @@ fn main() {
     let datasheet_xml = load_datafile(datasheet_path.as_path()).expect("Parsing datasheet file");
     let register_map_xml =
         load_datafile(register_map_path.as_path()).expect("Parsing register map file");
-    // let hsiom_conn_xml =
-    //     load_datafile(hsiom_conn_path.as_path()).expect("Parsing HSIOM connection file");
+    let package_xml =
+        package_path.map(|p| load_datafile(p.as_path()).expect("Parsing package file"));
+    let hsiom_conn_xml =
+        load_datafile(hsiom_conn_path.as_path()).expect("Parsing HSIOM connection file");
     // let clk_conn_xml = load_datafile(clk_conn_path.as_path()).expect("Parsing CLK connection file");
     // let irq_conn_xml = load_datafile(irq_conn_path.as_path()).expect("Parsing IRQ connection file");
 
@@ -249,12 +253,46 @@ fn main() {
     let datasheet_doc = roxmltree::Document::parse(&datasheet_xml).expect("Parsing datasheet XML");
     let register_map_doc =
         roxmltree::Document::parse(&register_map_xml).expect("Parsing register map XML");
-    // let _hsiom_conn_doc =
-    //     roxmltree::Document::parse(&hsiom_conn_xml).expect("Parsing HSIOM connection XML");
+    let package_doc = package_xml
+        .as_ref()
+        .map(|p| roxmltree::Document::parse(p).expect("Parsing package XML"));
+    let hsiom_conn_doc =
+        roxmltree::Document::parse(&hsiom_conn_xml).expect("Parsing HSIOM connection XML");
     // let _clk_conn_doc =
     //     roxmltree::Document::parse(&clk_conn_xml).expect("Parsing CLK connection XML");
     // let _irq_conn_doc =
     //     roxmltree::Document::parse(&irq_conn_xml).expect("Parsing IRQ connection XML");
+
+    let chip_pads: Vec<Node> = package_doc
+        .as_ref()
+        .map(|p| {
+            p.descendants()
+                .filter(|n| n.has_tag_name("Pad") && n.has_attribute("Port"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let hsiom_pads: Vec<Node> = hsiom_conn_doc
+        .descendants()
+        .filter(|n| n.has_tag_name("PinPad") && n.has_attribute("number"))
+        .collect();
+
+    let pin_connection_data: Vec<(&str, &str, &Node)> = hsiom_pads
+        .iter()
+        .filter_map(|h| {
+            let pad_number = h.attribute("number");
+            let package_node = chip_pads
+                .iter()
+                .find(|c| c.attribute("Number") == pad_number);
+            package_node.map(|p| {
+                (
+                    p.attribute("Port").unwrap(),
+                    p.attribute("PortPin").unwrap(),
+                    h,
+                )
+            })
+        })
+        .collect();
+    // println!("Pin connections: {:?}", _pin_connection_data);
 
     let description = datasheet_doc
         .root_element()
@@ -267,7 +305,6 @@ fn main() {
 
     // TODO:
     // interrupts
-    // pin mappings for hsiom
     let mut peripherals = Vec::<Peripheral>::new();
     // let temp_interrupt = Interrupt::builder()
     //     .name("test".to_string())
@@ -291,15 +328,11 @@ fn main() {
     for p in &peripheral_blocks {
         println!("Creating peripheral for {:?}", p);
 
-        // is this a register cluster?
-        // if p.first_element_child().unwrap().has_tag_name("block") {
-        //     // peripherals.append(&mut generate_register_cluster(p));
-        //     peripherals.push(Peripheral::Single(generate_register_cluster(p)));
-        // } else {
         let new_peripheral = generate_peripheral(p, &peripheral_blocks);
         peripherals.push(Peripheral::Single(new_peripheral));
-        // }
     }
+
+    fixup_hsio_functions(&mut peripherals, &pin_connection_data);
 
     let mut default_register_properties = RegisterProperties::new();
     default_register_properties.access = Some(Access::ReadWrite);
@@ -343,5 +376,72 @@ fn main() {
     match svd_file.write_all(svd_xml.as_bytes()) {
         Err(why) => panic!("Couldn't write to {}: {}", svd_filename, why),
         Ok(_) => println!("Successfully wrote to {}", svd_filename),
+    }
+}
+
+fn fixup_hsio_functions(
+    peripherals: &mut [Peripheral],
+    pin_connection_data: &[(&str, &str, &Node)],
+) {
+    let hsiom = peripherals.iter_mut().find(|p| p.name == "HSIOM").unwrap();
+    for pin in pin_connection_data {
+        // println!("Fixing up {}", format!("PORT_SEL{}", pin.0));
+        let hsiom_reg = hsiom
+            .clusters_mut()
+            .filter_map(|c| c.get_mut_register(format!("PORT_SEL{}", pin.0).as_str()))
+            .next()
+            .unwrap();
+        let field = hsiom_reg
+            .get_mut_field(format!("IO{}_SEL", pin.1).as_str())
+            .unwrap();
+        let mut new_values: Vec<EnumeratedValue> = pin
+            .2
+            .children()
+            .filter(|c| c.has_tag_name("PortSel"))
+            .map(|port| {
+                let name_string = port.attribute("signal").unwrap().to_string();
+                // println!("  Fixing up {}, name {:?}", name_string, port.attribute("name"));
+                let name_string = name_string
+                    .replace("[", "")
+                    .replace("]", "")
+                    .replace(".", "_");
+                let value = match port.attribute("name") {
+                    Some("GPIO") => Some(0),
+                    Some("GPIO_DSI") => Some(1),
+                    Some("DSI_DSI") => Some(2),
+                    Some("DSI_GPIO") => Some(3),
+                    Some("CSD_SENSE") => Some(4),
+                    Some("CSD_SHIELD") => Some(5),
+                    Some("AMUXA") => Some(6),
+                    Some("AMUXB") => Some(7),
+                    Some("ACT_0") => Some(8),
+                    Some("ACT_1") => Some(9),
+                    Some("ACT_2") => Some(10),
+                    Some("ACT_3") => Some(11),
+                    Some("DPSLP_0") => Some(12),
+                    Some("DPSLP_1") => Some(13),
+                    Some("DPSLP_2") => Some(14),
+                    Some("DPSLP_3") => Some(15),
+                    _ => None,
+                };
+                EnumeratedValue::builder()
+                    .name(name_string)
+                    .value(value)
+                    .build(ValidateLevel::Strict)
+                    .unwrap()
+            })
+            .collect();
+        new_values.push(
+            EnumeratedValue::builder()
+                .name("GPIO".to_string())
+                .value(Some(0))
+                .build(ValidateLevel::Strict)
+                .unwrap(),
+        );
+        field.enumerated_values = [EnumeratedValues::builder()
+            .values(new_values)
+            .build(ValidateLevel::Strict)
+            .unwrap()]
+        .to_vec();
     }
 }

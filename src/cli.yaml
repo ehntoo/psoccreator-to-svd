@@ -17,3 +17,10 @@ args:
         help: Output SVD file
         takes_value: true
         required: true
+    - package:
+        short: p
+        long: package
+        value_name: PACKAGE_FILE
+        help: Package file to load PinPad -> GPIO mapping from (more pins is generally better)
+        takes_value: true
+        required: false
