@@ -1,6 +1,4 @@
-#[macro_use]
-extern crate clap;
-use clap::App;
+use clap::Parser;
 use flate2::read::GzDecoder;
 use regex::Regex;
 use roxmltree::Node;
@@ -173,13 +171,21 @@ fn build_register(r: Node, base_addr: u64) -> RegisterCluster {
         let field_options = f
             .children()
             .filter(|v| v.has_tag_name("value"))
-            .map(|v| {
+            .filter_map(|v| {
                 let val_string = v.attribute("value").unwrap();
-                EnumeratedValue::builder()
-                    .name(v.attribute("name").unwrap().to_string())
-                    .value(Some(u64::from_str_radix(val_string, 2).unwrap()))
-                    .build(ValidateLevel::Strict)
-                    .unwrap()
+                let width = val_string.len();
+                // Some of the psoc data appears to be somewhat hastily/sloppily assembled
+                // and includes field values that can't fit into the field itself. For now,
+                // just exclude them.
+                if width <= bit_range.width as usize {
+                    EnumeratedValue::builder()
+                        .name(v.attribute("name").unwrap().to_string())
+                        .value(Some(u64::from_str_radix(val_string, 2).unwrap()))
+                        .build(ValidateLevel::Strict)
+                        .ok()
+                } else {
+                    None
+                }
             })
             .collect::<Vec<EnumeratedValue>>();
         let mut field_builder = FieldInfo::builder()
@@ -346,6 +352,17 @@ fn main() {
 
         let new_peripheral = generate_peripheral(p, &peripheral_blocks);
         peripherals.push(Peripheral::Single(new_peripheral));
+    }
+
+    let cpuss_block = register_map_doc
+        .root_element()
+        .descendants()
+        .find(|n| n.has_tag_name("block") && n.attribute("name") == Some("CPUSS"));
+    if let Some(cpuss_block) = cpuss_block {
+        peripherals.push(Peripheral::Single(generate_peripheral(
+            &cpuss_block,
+            &peripheral_blocks,
+        )));
     }
 
     fixup_hsio_functions(&mut peripherals, &pin_connection_data);
