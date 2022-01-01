@@ -9,6 +9,6 @@ edition = "2021"
 regex = "1"
 svd-encoder = "0.12.0"
 roxmltree = "0.14.1"
-clap = { version = "2.34.0", features = ["yaml"] }
+clap = { version = "3.0.0", features = ["derive"] }
 flate2 = "1.0.22"
 svd-rs = "0.12.1"

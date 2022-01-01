@@ -221,18 +221,34 @@ fn build_register(r: Node, base_addr: u64) -> RegisterCluster {
     RegisterCluster::Register(Register::Single(reg))
 }
 
-fn main() {
-    let yaml = load_yaml!("cli.yaml");
-    let matches = App::from_yaml(yaml).get_matches();
+/// Converts PSoC Creator data into CMSIS-SVD files
+#[derive(Parser, Debug)]
+#[clap(about, version, author)]
+struct Args {
+    /// Directory to source PSoC Creator data files from
+    #[clap(short, long)]
+    directory: String,
 
-    let directory = matches.value_of("directory").unwrap();
-    let dir_path = Path::new(directory);
+    /// Output SVD file
+    #[clap(short, long)]
+    output: String,
+
+    /// Package file to load PinPad -> GPIO mapping from (more pins is generally better)
+    #[clap(short, long)]
+    package: Option<String>,
+}
+
+fn main() {
+    let args = Args::parse();
+
+    let directory = args.directory;
+    let dir_path = Path::new(&directory);
 
     println!("Generating SVD from directory: {}", dir_path.display());
 
     let datasheet_path = dir_path.join("datasheet.cydata");
     let register_map_path = dir_path.join("map_inst.cydata");
-    let package_path = matches.value_of("package").map(|p| dir_path.join(p));
+    let package_path = args.package.map(|p| dir_path.join(p));
 
     let hsiom_conn_path = dir_path.join("hsiomconn.cydata");
     // let clk_conn_path = dir_path.join("clkconn.cydata");
@@ -367,7 +383,7 @@ fn main() {
 
     let svd_xml = svd_encoder::encode(&svd_device).expect("Encoding SVD");
 
-    let svd_filename = matches.value_of("output").unwrap();
+    let svd_filename = args.output;
     let mut svd_file = match File::create(&svd_filename) {
         Err(why) => panic!("Couldn't create {}: {}", svd_filename, why),
         Ok(file) => file,
